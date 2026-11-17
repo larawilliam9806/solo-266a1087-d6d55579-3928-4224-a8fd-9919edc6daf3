@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+uploads/
+demo/demo_sensors.db
+*.part

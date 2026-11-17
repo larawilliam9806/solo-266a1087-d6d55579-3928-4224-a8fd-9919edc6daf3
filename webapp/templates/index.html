@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>传感器入库排查 · 只读 SQL 工作台</title>
+<style>
+  :root { --bg:#0f1720; --card:#182430; --line:#2a3a4a; --fg:#dbe7f0; --dim:#8aa0b4;
+          --ok:#2fbf71; --warn:#e0a030; --err:#e05656; --run:#3b82f6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; }
+  header .sub { color:var(--dim); font-size:12px; }
+  main { max-width:1180px; margin:0 auto; padding:18px 22px 60px; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
+  .card h2 { margin:0 0 10px; font-size:14px; color:#9fc3e0; letter-spacing:.05em; }
+  button { background:#24455f; color:var(--fg); border:1px solid #3a5a78; border-radius:6px;
+           padding:6px 14px; cursor:pointer; font-size:13px; }
+  button:hover { background:#2d5574; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.danger { background:#5f2b2b; border-color:#7a3a3a; }
+  button.danger:hover { background:#743535; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--dim); font-size:12px; }
+  textarea { width:100%; min-height:130px; background:#0d1620; color:var(--fg); border:1px solid var(--line);
+             border-radius:8px; padding:10px 12px; font:13px/1.5 "SF Mono",Consolas,"Courier New",monospace;
+             resize:vertical; }
+  .banner { padding:8px 12px; border-radius:6px; margin:10px 0; font-size:13px; display:none; }
+  .banner.show { display:block; }
+  .banner.ok { background:rgba(47,191,113,.12); border:1px solid var(--ok); }
+  .banner.warn { background:rgba(224,160,48,.12); border:1px solid var(--warn); }
+  .banner.err { background:rgba(224,86,86,.12); border:1px solid var(--err); }
+  .banner.run { background:rgba(59,130,246,.12); border:1px solid var(--run); }
+  table.result { border-collapse:collapse; width:100%; font:12px/1.5 "SF Mono",Consolas,monospace; }
+  table.result th, table.result td { border:1px solid var(--line); padding:4px 8px; text-align:left;
+                                     max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  table.result th { background:#10202f; position:sticky; top:0; }
+  .tblwrap { max-height:480px; overflow:auto; border-radius:6px; margin-top:8px; }
+  details.tbl { border:1px solid var(--line); border-radius:8px; margin:8px 0; }
+  details.tbl summary { cursor:pointer; padding:8px 12px; }
+  details.tbl .body { padding:0 12px 10px; }
+  table.cols { border-collapse:collapse; font-size:12px; width:100%; }
+  table.cols th, table.cols td { border-bottom:1px solid var(--line); padding:3px 8px; text-align:left; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; border:1px solid var(--line); color:var(--dim); }
+  .examples button { font-size:12px; padding:4px 10px; }
+  #dropHint { border:1px dashed var(--line); border-radius:8px; padding:10px 14px; color:var(--dim); }
+  code { background:#0d1620; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>传感器入库排查 · 只读 SQL 工作台</h1>
+  <span class="sub">只读执行 SELECT / WITH · 最多 {{ max_concurrent }} 条并发 · 超过 {{ timeout }}s 自动终止 · 最多显示 {{ max_rows }} 行</span>
+</header>
+<main>
+  <section class="card">
+    <h2>① 数据库副本</h2>
+    <div class="row">
+      <input type="file" id="fileInput" accept=".db,.sqlite,.sqlite3,.db3">
+      <button id="uploadBtn">上传副本</button>
+      <button id="demoBtn" title="直接使用服务端内置的传感器演示库">使用内置演示库</button>
+      <a href="/demo/download" class="muted" style="color:#7fb3e0">下载演示库</a>
+      <button id="resetBtn" class="danger">清除副本</button>
+    </div>
+    <div id="dbStatus" class="muted" style="margin-top:8px">尚未加载数据库。</div>
+  </section>
+
+  <section class="card" id="schemaCard" style="display:none">
+    <h2>② 表结构 <button id="schemaBtn" style="float:right;font-size:12px">刷新</button></h2>
+    <div id="schemaBox"><span class="muted">加载中…</span></div>
+  </section>
+
+  <section class="card" id="queryCard" style="display:none">
+    <h2>③ 只读查询</h2>
+    <div class="row examples" style="margin-bottom:8px">
+      <span class="muted">示例：</span>
+      <button data-ex="dup">重复采样汇总</button>
+      <button data-ex="dupDetail">重复采样明细</button>
+      <button data-ex="dupRows">待清理的重复行</button>
+      <button data-ex="slow">慢查询（演示超时/取消）</button>
+    </div>
+    <textarea id="sql" spellcheck="false" placeholder="SELECT ... -- 仅允许 SELECT / WITH"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="runBtn">执行</button>
+      <button id="cancelBtn" class="danger" disabled>取消当前查询</button>
+      <span id="qStatus" class="muted"></span>
+    </div>
+    <div id="banner" class="banner"></div>
+    <div id="resultBox"></div>
+  </section>
+</main>
+
+<script>
+const MAX_ROWS = {{ max_rows }};
+const EXAMPLES = {
+  dup: `-- 重复采样汇总：同一传感器同一秒出现多条记录
+SELECT sensor_id, ts, COUNT(*) AS n, GROUP_CONCAT(id) AS sample_ids
+FROM sensor_samples
+GROUP BY sensor_id, ts
+HAVING COUNT(*) > 1
+ORDER BY n DESC, sensor_id, ts;`,
+  dupDetail: `-- 重复采样明细：展开每组重复，核对 value / batch_id / ingested_at
+SELECT s.id, s.sensor_id, s.ts, s.value, s.batch_id, s.ingested_at
+FROM sensor_samples s
+JOIN (
+  SELECT sensor_id, ts
+  FROM sensor_samples
+  GROUP BY sensor_id, ts
+  HAVING COUNT(*) > 1
+) d ON d.sensor_id = s.sensor_id AND d.ts = s.ts
+ORDER BY s.sensor_id, s.ts, s.id;`,
+  dupRows: `-- 待清理的重复行：每组保留最小 id，其余为应去重删除的行
+WITH ranked AS (
+  SELECT id, sensor_id, ts, value, batch_id,
+         ROW_NUMBER() OVER (PARTITION BY sensor_id, ts ORDER BY id) AS rn
+  FROM sensor_samples
+)
+SELECT * FROM ranked WHERE rn > 1 ORDER BY sensor_id, ts;`,
+  slow: `-- 慢查询：用于演示 3 秒自动终止与手动取消
+WITH RECURSIVE cnt(x) AS (
+  SELECT 1
+  UNION ALL
+  SELECT x + 1 FROM cnt WHERE x < 300000000
+)
+SELECT COUNT(*) AS n, SUM(x) AS total FROM cnt;`
+};
+
+const $ = id => document.getElementById(id);
+let currentJob = null, pollTimer = null;
+
+async function api(method, url, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const r = await fetch(url, opt);
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  return { status: r.status, body: j };
+}
+
+function setDbStatus(msg) { $('dbStatus').textContent = msg; }
+
+async function refreshCurrent() {
+  const { body } = await api('GET', '/api/current');
+  if (body.loaded) {
+    setDbStatus(`已加载副本（${(body.size/1024).toFixed(1)} KB）。所有查询均为只读，不影响原库。`);
+    $('schemaCard').style.display = '';
+    $('queryCard').style.display = '';
+    loadSchema();
+  } else {
+    setDbStatus('尚未加载数据库。');
+    $('schemaCard').style.display = 'none';
+    $('queryCard').style.display = 'none';
+  }
+}
+
+$('uploadBtn').onclick = async () => {
+  const f = $('fileInput').files[0];
+  if (!f) { setDbStatus('请先选择文件。'); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  setDbStatus('上传中…');
+  const r = await fetch('/upload', { method: 'POST', body: fd });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok) { setDbStatus(`已上传 ${j.name}（${(j.size/1024).toFixed(1)} KB）`); refreshCurrent(); }
+  else setDbStatus('上传失败：' + (j.error || r.status));
+};
+
+$('demoBtn').onclick = async () => {
+  const { status, body } = await api('POST', '/use-demo');
+  if (status === 200) { setDbStatus(`已加载内置演示库（${(body.size/1024).toFixed(1)} KB）`); refreshCurrent(); }
+  else setDbStatus('加载演示库失败：' + (body.error || status));
+};
+
+$('resetBtn').onclick = async () => {
+  await api('POST', '/reset');
+  setDbStatus('副本已清除。');
+  $('schemaCard').style.display = 'none';
+  $('queryCard').style.display = 'none';
+};
+
+async function loadSchema() {
+  const box = $('schemaBox');
+  const { status, body } = await api('GET', '/schema');
+  if (status !== 200) { box.innerHTML = ''; box.append(el('span','muted', body.error || '加载失败')); return; }
+  box.innerHTML = '';
+  for (const t of body.tables) {
+    const d = document.createElement('details');
+    d.className = 'tbl';
+    const s = document.createElement('summary');
+    s.append(el('b', '', `${t.name} `), el('span','pill', t.type), el('span','muted', ` ${t.row_count ?? '?'} 行`));
+    d.append(s);
+    const bodyDiv = document.createElement('div'); bodyDiv.className = 'body';
+    const tbl = document.createElement('table'); tbl.className = 'cols';
+    tbl.append(tr(['列名','类型','非空','主键','默认值'], true));
+    for (const c of t.columns) tbl.append(tr([c.name, c.type || '', c.notnull ? 'YES' : '', c.pk ? 'PK' : '', c.dflt_value ?? ''], false));
+    bodyDiv.append(tbl);
+    if (t.sql) { const p = document.createElement('p'); p.className='muted'; p.textContent = t.sql; bodyDiv.append(p); }
+    d.append(bodyDiv);
+    box.append(d);
+  }
+  if (body.indexes && body.indexes.length) {
+    const p = el('p','muted','索引：' + body.indexes.map(i => `${i.name} ON ${i.parent}`).join('；'));
+    box.append(p);
+  }
+  function tr(cells, head) {
+    const r = document.createElement('tr');
+    for (const c of cells) { const td = document.createElement(head ? 'th' : 'td'); td.textContent = c; r.append(td); }
+    return r;
+  }
+}
+$('schemaBtn').onclick = loadSchema;
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+
+document.querySelectorAll('.examples button').forEach(b => {
+  b.onclick = () => { $('sql').value = EXAMPLES[b.dataset.ex]; };
+});
+
+function banner(kind, msg) {
+  const b = $('banner');
+  b.className = 'banner show ' + kind;
+  b.textContent = msg;
+}
+function clearBanner() { const b = $('banner'); b.className = 'banner'; b.textContent = ''; }
+
+$('runBtn').onclick = async () => {
+  const sql = $('sql').value.trim();
+  if (!sql) { banner('err', 'SQL 不能为空'); return; }
+  clearBanner();
+  $('resultBox').innerHTML = '';
+  const { status, body } = await api('POST', '/query', { sql });
+  if (status === 429) { banner('warn', body.error); return; }
+  if (status !== 200) { banner('err', body.error || ('请求失败 ' + status)); return; }
+  currentJob = body.job_id;
+  setRunning(true);
+  poll();
+};
+
+$('cancelBtn').onclick = async () => {
+  if (!currentJob) return;
+  $('cancelBtn').disabled = true;
+  $('qStatus').textContent = '正在取消…';
+  const { body } = await api('POST', `/query/${currentJob}/cancel`);
+  renderFinal(body);   // 后端返回时计算已停止、名额已释放
+};
+
+function setRunning(on) {
+  $('runBtn').disabled = on;
+  $('cancelBtn').disabled = !on;
+  if (on) $('qStatus').textContent = '运行中…';
+}
+
+async function poll() {
+  if (!currentJob) return;
+  const { status, body } = await api('GET', `/query/${currentJob}`);
+  if (status !== 200) { banner('err', body.error || '查询状态获取失败'); finish(); return; }
+  $('qStatus').textContent = `运行中… ${(body.elapsed_ms/1000).toFixed(1)}s`;
+  if (['done','error','timeout','cancelled'].includes(body.status)) { renderFinal(body); return; }
+  pollTimer = setTimeout(poll, 250);
+}
+
+function finish() {
+  currentJob = null;
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  setRunning(false);
+}
+
+function renderFinal(j) {
+  finish();
+  const box = $('resultBox');
+  box.innerHTML = '';
+  const secs = (j.elapsed_ms/1000).toFixed(2);
+  if (j.status === 'done') {
+    $('qStatus').textContent = `完成，用时 ${secs}s`;
+    if (j.truncated) banner('warn', `结果已截断：仅显示前 ${MAX_ROWS} 行（共超过 ${MAX_ROWS} 行）。可加 LIMIT 缩小范围。`);
+    else banner('ok', `查询成功，返回 ${j.row_count} 行，用时 ${secs}s。`);
+    renderTable(box, j.columns, j.rows);
+  } else if (j.status === 'timeout') {
+    $('qStatus').textContent = '';
+    banner('warn', `查询超过 ${secs}s 已被自动终止，计算已停止并释放查询位。`);
+  } else if (j.status === 'cancelled') {
+    $('qStatus').textContent = '';
+    banner('warn', `查询已取消（${secs}s），计算已停止并释放查询位。`);
+  } else {
+    $('qStatus').textContent = '';
+    banner('err', '查询失败：' + (j.error || '未知错误'));
+  }
+}
+
+function renderTable(box, cols, rows) {
+  if (!rows.length) { box.append(el('p','muted','结果为空。')); return; }
+  const wrap = document.createElement('div'); wrap.className = 'tblwrap';
+  const t = document.createElement('table'); t.className = 'result';
+  const hr = document.createElement('tr');
+  for (const c of cols) { const th = document.createElement('th'); th.textContent = c; hr.append(th); }
+  t.append(hr);
+  for (const row of rows) {
+    const r = document.createElement('tr');
+    for (const v of row) { const td = document.createElement('td'); td.textContent = v === null ? 'NULL' : String(v); if (v===null) td.style.color='var(--dim)'; r.append(td); }
+    t.append(r);
+  }
+  wrap.append(t);
+  box.append(wrap);
+}
+
+refreshCurrent();
+</script>
+</body>
+</html>

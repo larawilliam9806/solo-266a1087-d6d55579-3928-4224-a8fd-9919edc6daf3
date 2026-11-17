@@ -1,0 +1,19 @@
+services:
+  web:
+    build: .
+    image: sensor-sql-inspector
+    ports:
+      - "8000:8000"
+    environment:
+      # 生产部署请通过 SECRET_KEY 环境变量覆盖
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      QUERY_TIMEOUT: "3"      # 单条查询最长运行秒数，超时自动终止
+      MAX_CONCURRENT: "2"     # 最大并发查询数，满额返回 429
+      MAX_ROWS: "1000"        # 单次最多返回行数
+      MAX_UPLOAD_MB: "300"    # 上传文件大小上限
+    volumes:
+      - uploads:/data/uploads
+    restart: unless-stopped
+
+volumes:
+  uploads:

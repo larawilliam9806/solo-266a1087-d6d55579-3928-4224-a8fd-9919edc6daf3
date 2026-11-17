@@ -1,0 +1,7 @@
+.git
+__pycache__/
+*.pyc
+uploads/
+demo/demo_sensors.db
+tests/
+*.part
